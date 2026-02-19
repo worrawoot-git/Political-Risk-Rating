@@ -2,5 +2,5 @@ streamlit
 pandas
 plotly
 wbgapi
-numpy
 scikit-learn
+numpy
