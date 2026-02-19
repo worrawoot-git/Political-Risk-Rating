@@ -1,67 +1,95 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import wbgapi as wb
-import datetime
 import numpy as np
 from sklearn.linear_model import LinearRegression
+import datetime
 
 # --- Config ---
-st.set_page_config(page_title="Dynamic Political Monitor", layout="wide")
+st.set_page_config(page_title="Global Political Analytics", layout="wide")
 
-st.title("🏛️ Worldwide Governance Indicators (WGI)")
-st.caption(f"ระบบดึงข้อมูลอัตโนมัติจาก World Bank | อัปเดตล่าสุด: {datetime.datetime.now().year}")
+st.markdown("""
+    <style>
+    .stMetric { background: white; padding: 20px; border-radius: 10px; border: 1px solid #e1e8ed; }
+    h1 { color: #0071bc; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- Sidebar ---
-st.sidebar.header("Settings")
-selected_countries = st.sidebar.multiselect(
-    "Select Countries", 
-    ["THA", "VNM", "MYS", "SGP", "IDN", "PHL", "USA", "CHN"], 
-    default=["THA", "VNM"]
-)
+st.title("🏛️ Global Governance & Democracy Monitor")
+st.caption(f"Data Source: Our World in Data & EIU | Auto-updated: {datetime.datetime.now().year}")
 
-# --- Backend: Auto-Update Fetching ---
-@st.cache_data(ttl=86400) # ให้รีเฟรชข้อมูลทุก 24 ชั่วโมง
-def fetch_auto_data(countries):
+# --- ฐานข้อมูลสำรองที่เสถียรที่สุด (GitHub Direct Link) ---
+# ไฟล์นี้รวบรวมดัชนีการเมืองจากทั่วโลก อัปเดตอัตโนมัติทุกปี
+DATA_URL = "https://raw.githubusercontent.com/owid/owid-datasets/master/datasets/Democracy%20Index%20(EIU)/Democracy%20Index%20(EIU).csv"
+
+@st.cache_data(ttl=86400)
+def load_live_data():
     try:
-        this_year = datetime.datetime.now().year
-        # ดึงข้อมูลจากปี 2010 จนถึงปีปัจจุบันของคอมพิวเตอร์
-        df = wb.data.DataFrame('WGI.PV', countries, time=range(2010, this_year + 1), labels=True)
-        if df is None or df.empty: return None
-        
-        # ปรับโครงสร้างและกรองข้อมูลที่ยังไม่เกิดขึ้น (NaN)
-        df_long = df.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Score')
-        df_long['Year'] = df_long['Year'].str.replace('YR', '').astype(int)
-        return df_long.dropna(subset=['Score']).sort_values(['Country', 'Year'])
+        # ดึงไฟล์ CSV โดยตรง (เร็วกว่าและเสถียรกว่า API)
+        df = pd.read_csv(DATA_URL)
+        df.columns = ['Country', 'Code', 'Year', 'Score']
+        return df
     except:
         return None
 
-# --- Main App ---
-if selected_countries:
-    data = fetch_auto_data(selected_countries)
-    
-    if data is not None and not data.empty:
-        latest_year = data['Year'].max()
-        st.success(f"✅ ข้อมูลจริงล่าสุดในฐานข้อมูลคือปี: {latest_year}")
+df = load_live_data()
 
-        # Forecast AI: พยากรณ์ต่อจากปีล่าสุดไปอีก 3 ปี
-        forecast_results = []
-        for c in selected_countries:
-            c_data = data[data['Country'] == c]
+# --- Sidebar ---
+st.sidebar.header("Filter Settings")
+if df is not None:
+    all_countries = sorted(df['Country'].unique())
+    selected_countries = st.sidebar.multiselect(
+        "Select Countries", 
+        all_countries, 
+        default=["Thailand", "Vietnam", "Malaysia"]
+    )
+
+    # --- Processing ---
+    if selected_countries:
+        filtered_df = df[df['Country'].isin(selected_countries)].copy()
+        latest_actual_year = int(filtered_df['Year'].max())
+        
+        # Forecast Logic: พยากรณ์ล่วงหน้า 3 ปีจากปีล่าสุดที่มีข้อมูลจริง
+        forecast_list = []
+        future_years = [latest_actual_year + 1, latest_actual_year + 2, latest_actual_year + 3]
+        
+        for country in selected_countries:
+            c_data = filtered_df[filtered_df['Country'] == country].sort_values('Year')
             if len(c_data) >= 3:
                 model = LinearRegression().fit(c_data[['Year']], c_data['Score'])
-                # ทำนายปีถัดไป 3 ปี
-                future = np.array([latest_year+1, latest_year+2, latest_year+3]).reshape(-1, 1)
-                preds = model.predict(future)
-                for i, yr in enumerate(future.flatten()):
-                    forecast_results.append({'Country': c, 'Year': yr, 'Score': preds[i], 'Type': 'Forecast'})
+                preds = model.predict(np.array(future_years).reshape(-1, 1))
+                
+                for i, yr in enumerate(future_years):
+                    forecast_list.append({
+                        'Country': country, 'Year': yr, 
+                        'Score': round(max(0, min(10, preds[i])), 2), 'Type': 'Forecast'
+                    })
 
-        data['Type'] = 'Actual'
-        df_final = pd.concat([data, pd.DataFrame(forecast_results)])
+        filtered_df['Type'] = 'Actual'
+        df_forecast = pd.DataFrame(forecast_list)
+        df_final = pd.concat([filtered_df, df_forecast]).reset_index(drop=True)
 
-        # Chart
-        fig = px.line(df_final, x="Year", y="Score", color="Country", line_dash="Type", markers=True,
-                      title=f"Political Stability Trend (Updated up to {latest_year})")
+        # --- Visuals ---
+        st.success(f"📊 ข้อมูลจริงล่าสุดอัปเดตถึงปี: {latest_actual_year}")
+        
+        # 1. Metrics
+        m_cols = st.columns(len(selected_countries))
+        for idx, country in enumerate(selected_countries):
+            c_latest = filtered_df[filtered_df['Country'] == country].iloc[-1]
+            with m_cols[idx]:
+                st.metric(f"{country} ({latest_actual_year})", f"{c_latest['Score']:.2f}")
+
+        # 2. Chart
+        fig = px.line(df_final, x="Year", y="Score", color="Country", line_dash="Type",
+                      markers=True, title="Political Stability & Democracy Index (Trend & Forecast)",
+                      template="plotly_white", height=500)
+        fig.update_layout(yaxis_range=[0, 10], hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
+
+        # 3. Table
+        with st.expander("🔎 View Raw Data & Predictions"):
+            st.dataframe(df_final.sort_values(['Country', 'Year'], ascending=[True, False]), use_container_width=True)
     else:
-        st.error("ไม่สามารถเชื่อมต่อฐานข้อมูล World Bank ได้ในขณะนี้")
+        st.info("👈 Please select countries in the sidebar.")
+else:
+    st.error("❌ ไม่สามารถดึงข้อมูลได้เนื่องจากปัญหาการเชื่อมต่อ Server โปรดลองอีกครั้งในภายหลัง")
