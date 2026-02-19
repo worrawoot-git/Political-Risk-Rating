@@ -6,25 +6,24 @@ import datetime
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-# --- Page Setup ---
-st.set_page_config(page_title="WGI Governance Explorer", layout="wide")
+# --- ตั้งค่าหน้าเว็บ ---
+st.set_page_config(page_title="WGI Governance & Forecast", layout="wide")
 
-# --- Custom Styling ---
+# ปรับแต่ง CSS ให้ดูเป็นมืออาชีพ
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { border-radius: 10px; border: 1px solid #dce1e6; background: white; padding: 15px; }
-    h1 { color: #1a4e8a; }
+    .main { background-color: #f9fbfd; }
+    .stMetric { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #eef2f6; }
+    h1 { color: #1e40af; font-weight: 800; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🏛️ Worldwide Governance Indicators (WGI)")
-st.caption("Data provided by World Bank Group | Intelligent Forecasting System")
+st.caption("ระบบวิเคราะห์และพยากรณ์ธรรมาภิบาลโลก | ข้อมูลอัปเดตอัตโนมัติจาก World Bank API")
 
-# --- Sidebar Filters ---
-st.sidebar.header("Filter Settings")
+# --- ส่วนของการตั้งค่า (Sidebar) ---
+st.sidebar.header("🔍 ตัวเลือกการแสดงผล")
 
-# รายชื่อดัชนี WGI 6 ด้านหลัก
 indicator_map = {
     'WGI.PV': 'Political Stability and Absence of Violence',
     'WGI.CC': 'Control of Corruption',
@@ -33,92 +32,97 @@ indicator_map = {
     'WGI.RQ': 'Regulatory Quality',
     'WGI.RL': 'Rule of Law'
 }
-selected_ind_label = st.sidebar.selectbox("Select Indicator", list(indicator_map.values()))
+selected_ind_label = st.sidebar.selectbox("เลือกตัวชี้วัด (Indicator)", list(indicator_map.values()))
 selected_ind_code = [k for k, v in indicator_map.items() if v == selected_ind_label][0]
 
 selected_countries = st.sidebar.multiselect(
-    "Select Countries", 
-    ["THA", "VNM", "IDN", "SGP", "MYS", "USA", "CHN", "JPN", "GBR", "IND"],
+    "เลือกประเทศ", 
+    ["THA", "VNM", "IDN", "SGP", "MYS", "PHL", "USA", "CHN", "JPN", "GBR", "IND", "KOR"],
     default=["THA", "VNM"]
 )
 
-# ปรับช่วงปีเริ่มต้นคงที่ แต่ให้โปรแกรมหาปีสิ้นสุดเอง
-start_year = st.sidebar.number_input("Start Year", 2000, 2020, 2010)
-this_year = datetime.datetime.now().year
+# ให้เลือกปีเริ่มต้นเท่านั้น ส่วนปีสิ้นสุดระบบจะหาค่าล่าสุดให้เอง
+start_year = st.sidebar.number_input("ปีที่เริ่มดึงข้อมูล (Start Year)", 2000, 2020, 2010)
 
-# --- Backend: ดึงข้อมูลและจัดการ Data Gap ---
+# --- ฟังก์ชันดึงข้อมูล (Backend) ---
 @st.cache_data(ttl=86400)
-def fetch_and_process(countries, ind_code, start_yr, end_yr):
+def fetch_wgi_data(countries, ind_code, start_yr):
     try:
-        # ดึงข้อมูลย้อนหลังเผื่อไว้จนถึงปีปัจจุบัน
-        df = wb.data.DataFrame(ind_code, countries, time=range(start_yr, end_yr + 1), labels=True)
-        if df.empty: return None
+        # ดึงข้อมูลตั้งแต่อดีตจนถึงปัจจุบัน (API จะส่งปีล่าสุดที่มีมาให้เอง)
+        df = wb.data.DataFrame(ind_code, countries, time=range(start_yr, datetime.datetime.now().year + 1), labels=True)
+        if df is None or df.empty:
+            return None
         
-        # แปลงเป็น Long Format
+        # ปรับโครงสร้างข้อมูล (Transform)
         df_melted = df.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Score')
         df_melted['Year'] = df_melted['Year'].str.replace('YR', '').astype(int)
         
-        # ลบค่าที่เป็น NaN (ปีที่ยังไม่มีข้อมูล)
+        # ลบค่าว่าง (dropna) เพื่อป้องกันปัญหาไม่มีข้อมูลของปีล่าสุด
         df_clean = df_melted.dropna(subset=['Score']).sort_values(['Country', 'Year'])
         return df_clean
     except Exception as e:
+        st.sidebar.error(f"API Connection Error: {e}")
         return None
 
-# --- Main App Logic ---
+# --- การประมวลผลและแสดงผลหลัก ---
 if selected_countries:
-    # ดึงข้อมูลย้อนหลังตั้งแต่ปีที่เลือกจนถึงปัจจุบัน (ระบบจะกรองปีที่ไม่มีข้อมูลออกเอง)
-    data = fetch_and_process(selected_countries, selected_ind_code, start_year, this_year)
+    data = fetch_wgi_data(selected_countries, selected_ind_code, start_year)
     
     if data is not None and not data.empty:
-        # หาวันที่ล่าสุดที่มีข้อมูลจริง
-        latest_available_year = data['Year'].max()
-        st.success(f"✅ ดึงข้อมูลสำเร็จ: ข้อมูลล่าสุดที่มีคือปี {latest_available_year}")
+        # หาปีล่าสุดที่มีข้อมูลจริงในระบบ
+        latest_actual_year = data['Year'].max()
+        st.info(f"💡 ข้อมูลจริงล่าสุดที่มีในฐานข้อมูลธนาคารโลกคือปี: **{latest_actual_year}** (ระบบจะเริ่มพยากรณ์จากปีนี้)")
 
-        # --- Forecasting 3 Years from Latest Available Data ---
+        # --- ส่วนการพยากรณ์ (Forecasting Logic) ---
         forecast_results = []
         for country in selected_countries:
             c_data = data[data['Country'] == country]
-            if len(c_data) > 2: # ต้องมีข้อมูลอย่างน้อย 3 ปีถึงจะพยากรณ์ได้
+            if len(c_data) >= 3: # ต้องมีข้อมูลอย่างน้อย 3 จุดเพื่อสร้าง Trend
                 X = c_data['Year'].values.reshape(-1, 1)
                 y = c_data['Score'].values
                 model = LinearRegression().fit(X, y)
                 
-                # พยากรณ์ล่วงหน้า 3 ปีจากปีล่าสุดที่มีข้อมูล
-                future_years = np.array([latest_available_year + 1, latest_available_year + 2, latest_available_year + 3]).reshape(-1, 1)
+                # พยากรณ์ไปอีก 3 ปีข้างหน้า
+                future_years = np.array([latest_actual_year + 1, latest_actual_year + 2, latest_actual_year + 3]).reshape(-1, 1)
                 preds = model.predict(future_years)
                 
-                for idx, yr in enumerate(future_years.flatten()):
+                for i, yr in enumerate(future_years.flatten()):
                     forecast_results.append({
-                        'Country': country,
-                        'Year': int(yr),
-                        'Score': round(preds[idx], 3),
-                        'Type': 'Forecast'
+                        'Country': country, 'Year': int(yr), 
+                        'Score': round(preds[i], 3), 'Type': 'Forecast'
                     })
 
         data['Type'] = 'Actual'
         df_forecast = pd.DataFrame(forecast_results)
         df_final = pd.concat([data, df_forecast]).reset_index(drop=True)
 
-        # --- Display Results ---
-        # 1. Metrics
-        m_cols = st.columns(len(selected_countries))
+        # --- ส่วนแสดงผลบนหน้าเว็บ ---
+        # 1. กล่องคะแนน (Metrics)
+        cols = st.columns(len(selected_countries))
         for idx, country in enumerate(selected_countries):
             c_latest = data[data['Country'] == country].iloc[-1]
-            with m_cols[idx]:
-                st.metric(f"{country} Score ({latest_available_year})", f"{c_latest['Score']:.2f}")
+            with cols[idx]:
+                st.metric(f"{country} ({latest_actual_year})", f"{c_latest['Score']:.2f}")
 
-        # 2. Chart
+        # 2. กราฟ (Interactive Chart)
         fig = px.line(df_final, x="Year", y="Score", color="Country", line_dash="Type",
-                      title=f"Trend & Prediction: {selected_ind_label}",
-                      markers=True, template="plotly_white", height=500)
-        fig.update_layout(yaxis_range=[-2.5, 2.5]) # มาตรฐาน WGI คือ -2.5 ถึง 2.5
+                      title=f"แนวโน้มและการพยากรณ์: {selected_ind_label}",
+                      markers=True, template="plotly_white", height=500,
+                      color_discrete_sequence=px.colors.qualitative.Safe)
+        
+        fig.update_layout(yaxis_range=[-2.5, 2.5], hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        # 3. Data Table
-        with st.expander("🔎 ดูตารางข้อมูลทั้งหมด"):
-            st.dataframe(df_final.pivot(index='Year', columns='Country', values='Score').sort_index(ascending=False), use_container_width=True)
+        # 3. ตารางข้อมูล (Data Table)
+        with st.expander("📊 ตรวจสอบตารางข้อมูลดิบและการพยากรณ์"):
+            pivot_df = df_final.pivot(index='Year', columns='Country', values='Score').sort_index(ascending=False)
+            st.dataframe(pivot_df, use_container_width=True)
             
+        # ปุ่มดาวน์โหลด
+        csv = df_final.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 ดาวน์โหลดข้อมูล (CSV)", csv, "wgi_analysis.csv", "text/csv")
+
     else:
-        st.error("❌ ไม่พบข้อมูลในฐานข้อมูล World Bank สำหรับกลุ่มประเทศที่เลือก โปรดลองเปลี่ยน Start Year หรือเพิ่มประเทศ")
+        st.error("⚠️ ไม่พบข้อมูลสำหรับประเทศที่เลือกในช่วงปีนี้ โปรดเลือกประเทศอื่นหรือปรับปีเริ่มต้น")
 else:
-    st.info("👈 กรุณาเลือกประเทศที่แถบเมนูด้านซ้าย")
+    st.warning("👈 กรุณาเลือกประเทศที่แถบเมนูด้านซ้ายเพื่อเริ่มการวิเคราะห์")
