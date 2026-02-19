@@ -3,104 +3,113 @@ import pandas as pd
 import plotly.express as px
 import wbgapi as wb
 import datetime
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
-# --- Page Configuration ---
-st.set_page_config(page_title="WGI Interactive Dashboard Clone", layout="wide")
+# --- Config ---
+st.set_page_config(page_title="Global Governance & Forecast", layout="wide")
 
-# --- Custom CSS เพื่อให้หน้าตาเหมือน World Bank ---
+# --- CSS ---
 st.markdown("""
     <style>
-    .main { background-color: #f4f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 5px; border-left: 5px solid #0071bc; }
-    h1 { color: #0071bc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    .sidebar .sidebar-content { background-color: #ffffff; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e1e4e8; }
+    h1, h2 { color: #0071bc; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- Header ---
-st.title("🏛️ Worldwide Governance Indicators (WGI)")
-st.caption("Interactive Data Access Clone | Source: World Bank Group")
+st.title("🏛️ Worldwide Governance & Political Forecast")
+st.caption(f"Data Source: World Bank WGI | System Date: {datetime.datetime.now().year}")
 
-# --- Sidebar Filters (เหมือนหน้าเว็บ WGI) ---
-st.sidebar.header("Data Selection")
+# --- Sidebar ---
+st.sidebar.header("Filter Settings")
+this_year = datetime.datetime.now().year
 
-# 1. Select Indicators (อ้างอิงตาม WGI 6 ตัวหลัก)
 indicator_map = {
-    'WGI.VA': 'Voice and Accountability',
-    'WGI.PV': 'Political Stability and Absence of Violence/Terrorism',
-    'WGI.GE': 'Government Effectiveness',
-    'WGI.RQ': 'Regulatory Quality',
-    'WGI.RL': 'Rule of Law',
-    'WGI.CC': 'Control of Corruption'
+    'WGI.PV': 'Political Stability',
+    'WGI.CC': 'Control of Corruption',
+    'WGI.VA': 'Voice & Accountability',
+    'WGI.GE': 'Government Effectiveness'
 }
 selected_ind_label = st.sidebar.selectbox("Select Indicator", list(indicator_map.values()))
 selected_ind_code = [k for k, v in indicator_map.items() if v == selected_ind_label][0]
 
-# 2. Select Countries
-all_countries = ["THA", "SGP", "VNM", "MYS", "IDN", "PHL", "USA", "GBR", "CHN", "JPN"]
-selected_countries = st.sidebar.multiselect("Select Country/Territory", all_countries, default=["THA"])
+selected_countries = st.sidebar.multiselect(
+    "Select Countries", 
+    ["THA", "VNM", "IDN", "SGP", "MYS", "PHL", "USA", "CHN", "JPN", "GBR"],
+    default=["THA", "VNM"]
+)
 
-# 3. Select Year Range
-this_year = datetime.datetime.now().year
-year_range = st.sidebar.slider("Select Year Range", 2000, this_year, (2015, 2024))
+year_range = st.sidebar.slider("Historical Range", 2005, this_year, (2015, this_year))
 
-# --- Data Fetching ---
-@st.cache_data
-def fetch_wgi_data(codes, indicator, years):
+# --- Function: Fetch Data ---
+@st.cache_data(ttl=86400)
+def get_clean_data(codes, ind_code, years):
     try:
-        # ดึงข้อมูลจาก WB API
-        df = wb.data.DataFrame(indicator, codes, time=range(years[0], years[1]+1), labels=True)
-        return df
+        # ดึงข้อมูลจาก WB
+        df = wb.data.DataFrame(ind_code, codes, time=range(years[0], years[1]+1), labels=True)
+        if df.empty: return None
+        # ปรับโครงสร้างข้อมูล
+        df_long = df.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Score')
+        df_long['Year'] = df_long['Year'].str.replace('YR', '').astype(int)
+        df_long = df_long.dropna(subset=['Score'])
+        return df_long
     except:
         return None
 
-# --- Main Display ---
+# --- Main Logic ---
 if selected_countries:
-    data = fetch_wgi_data(selected_countries, selected_ind_code, year_range)
+    raw_data = get_clean_data(selected_countries, selected_ind_code, year_range)
     
-    if data is not None:
-        # ส่วนแสดง Score ล่าสุด (Metric Boxes)
-        st.subheader(f"Current Status: {selected_ind_label}")
-        cols = st.columns(len(selected_countries))
+    if raw_data is not None and not raw_data.empty:
+        # 1. Visualization
+        st.subheader(f"📈 Trend Analysis: {selected_ind_label}")
         
-        # ปรับ Data ให้อยู่ในรูปที่วาดกราฟง่าย (Long Format)
-        df_melted = data.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Estimate')
-        df_melted['Year'] = df_melted['Year'].str.replace('YR', '').astype(int)
-        
-        for idx, country in enumerate(selected_countries):
-            latest_val = df_melted[df_melted['Country'] == country].sort_values('Year').iloc[-1]['Estimate']
-            with cols[idx]:
-                st.metric(label=country, value=f"{latest_val:.2f}")
+        # ส่วนการพยากรณ์
+        forecast_data = []
+        for c in selected_countries:
+            c_df = raw_data[raw_data['Country'] == c]
+            if len(c_df) > 1:
+                X = c_df['Year'].values.reshape(-1, 1)
+                y = c_df['Score'].values
+                model = LinearRegression().fit(X, y)
+                
+                # พยากรณ์ 3 ปี
+                last_y = c_df['Year'].max()
+                future_yrs = np.array([last_y+1, last_y+2, last_y+3]).reshape(-1, 1)
+                preds = model.predict(future_yrs)
+                
+                for idx, fy in enumerate(future_yrs.flatten()):
+                    forecast_data.append({'Country': c, 'Year': int(fy), 'Score': preds[idx], 'Type': 'Forecast'})
 
-        # ส่วนแสดง Chart
+        # รวมข้อมูลจริงและพยากรณ์
+        raw_data['Type'] = 'Actual'
+        df_all = pd.concat([raw_data, pd.DataFrame(forecast_data)])
+        
+        fig = px.line(df_all, x="Year", y="Score", color="Country", line_dash="Type", 
+                      markers=True, template="plotly_white", height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 2. Summary Table (Fixed Error)
         st.divider()
-        tab1, tab2 = st.tabs(["📈 Time Series Chart", "📊 Comparison Table"])
+        st.subheader("📋 Data Summary")
         
-        with tab1:
-            fig = px.line(df_melted, x="Year", y="Estimate", color="Country",
-                          title=f"Trend: {selected_ind_label}",
-                          labels={"Estimate": "Governance Score (-2.5 to 2.5)"},
-                          markers=True, line_shape="linear")
-            fig.update_layout(hovermode="x unified", plot_bgcolor="white")
-            st.plotly_chart(fig, use_container_width=True)
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            # แสดงตารางแบบไม่มี Gradient เพื่อความเสถียร แต่ใช้การจัดฟอร์แมตตัวเลขแทน
+            st.dataframe(df_all.sort_values(['Country', 'Year'], ascending=[True, False]), use_container_width=True)
+        
+        with col2:
+            st.info("""
+            **Score Guide:**
+            - **+2.5**: Strong / High Stability
+            - **0.0**: Average
+            - **-2.5**: Weak / Low Stability
+            """)
+            csv = df_all.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download CSV", csv, "governance_data.csv", "text/csv")
             
-        with tab2:
-            st.dataframe(data, use_container_width=True)
-            
-        # ปุ่ม Download (เหมือนหน้าเว็บจริง)
-        csv = data.to_csv().encode('utf-8')
-        st.download_button("📥 Export to Excel/CSV", csv, "wgi_data.csv", "text/csv")
-
     else:
-        st.error("ไม่สามารถดึงข้อมูลได้ โปรดลองเลือกประเทศใหม่อีกครั้ง")
+        st.error("❌ ไม่พบข้อมูลสำหรับประเทศหรือช่วงเวลาที่เลือก โปรดลองขยายช่วงปี (Historical Range) ให้กว้างขึ้น")
 else:
-    st.info("👈 Please select at least one country in the sidebar to view the dashboard.")
-
-# --- Footer ข้อมูลอธิบาย ---
-with st.expander("ℹ️ About the Indicators"):
-    st.write("""
-    **Estimate:** ให้คะแนนระหว่าง -2.5 (แย่ที่สุด) ถึง 2.5 (ดีที่สุด)
-    - **Voice and Accountability:** สิทธิเสรีภาพและการมีส่วนร่วม
-    - **Control of Corruption:** การควบคุมคอร์รัปชัน
-    - **Political Stability:** เสถียรภาพทางการเมือง
-    """)
+    st.info("👈 กรุณาเลือกประเทศที่ Sidebar เพื่อเริ่มต้น")
