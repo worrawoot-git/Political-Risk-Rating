@@ -6,22 +6,21 @@ import datetime
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-# --- ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="WGI Governance Analytics", layout="wide")
+# --- การตั้งค่าหน้าเว็บ ---
+st.set_page_config(page_title="WGI Global Analytics", layout="wide")
 
-# ปรับ CSS ให้สะอาดตาแบบ Dashboard สากล
 st.markdown("""
     <style>
     .stMetric { background: #ffffff; padding: 20px; border-radius: 10px; border: 1px solid #e1e8ed; }
-    h1 { color: #0071bc; }
+    h1 { color: #0071bc; font-family: sans-serif; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🏛️ Worldwide Governance Indicators (WGI)")
-st.caption("ระบบวิเคราะห์ข้อมูลธรรมาภิบาลและความเสี่ยงทางการเมือง (ฉบับปรับปรุงการเชื่อมต่อ)")
+st.caption("วิเคราะห์ดัชนีธรรมาภิบาลโลกและการพยากรณ์ล่วงหน้า (ฉบับแก้ไขการเชื่อมต่อ)")
 
 # --- Sidebar ---
-st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
+st.sidebar.header("⚙️ ตั้งค่าการดึงข้อมูล")
 
 indicator_map = {
     'WGI.PV': 'Political Stability',
@@ -40,72 +39,85 @@ selected_countries = st.sidebar.multiselect(
     default=["THA", "VNM"]
 )
 
-# ให้เลือกเฉพาะปีเริ่ม ส่วนปีจบจะถูกคำนวณอัตโนมัติจากฐานข้อมูลจริง
-start_year = st.sidebar.slider("เลือกปีเริ่มต้นฐานข้อมูล", 2000, 2015, 2010)
+# ให้เลือกเฉพาะปีเริ่มต้น ส่วนปีจบระบบจะหาค่าล่าสุดให้เองอัตโนมัติ
+start_year = st.sidebar.slider("เลือกปีเริ่มต้นฐานข้อมูล", 2000, 2018, 2010)
 
-# --- Backend: ดึงข้อมูลแบบปลอดภัย (Safe Fetch) ---
+# --- ฟังก์ชันดึงข้อมูลแบบปลอดภัย (Robust Fetching) ---
 @st.cache_data(ttl=86400)
-def fetch_wgi_safe(countries, ind_code, start_yr):
+def fetch_wgi_robust(countries, ind_code, start_yr):
     try:
         # ดึงข้อมูลโดยไม่ระบุปีจบ (API จะส่งปีล่าสุดที่มีจริงมาให้เองโดยไม่ Error)
-        df = wb.data.DataFrame(ind_code, countries, time=range(start_yr, 2025), labels=True)
+        # เราดึงเผื่อย้อนหลังมาจนถึงปีปัจจุบัน (2026) เพื่อให้ระบบกรองเอง
+        df = wb.data.DataFrame(ind_code, countries, time=range(start_yr, 2027), labels=True)
         if df is None or df.empty:
             return None
         
-        # ปรับโครงสร้างข้อมูล
-        df_melted = df.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Score')
-        df_melted['Year'] = df_melted['Year'].str.replace('YR', '').astype(int)
+        # ปรับโครงสร้างข้อมูล (Reshape)
+        df_long = df.reset_index().melt(id_vars=['Country'], var_name='Year', value_name='Score')
+        df_long['Year'] = df_long['Year'].str.replace('YR', '').astype(int)
         
-        # กรองเอาเฉพาะที่มีข้อมูลจริง
-        return df_melted.dropna(subset=['Score']).sort_values(['Country', 'Year'])
-    except:
+        # กรองเฉพาะแถวที่มีตัวเลขจริง (กำจัดปีที่ยังไม่มีข้อมูล)
+        return df_long.dropna(subset=['Score']).sort_values(['Country', 'Year'])
+    except Exception as e:
         return None
 
-# --- Main Logic ---
+# --- ส่วนประมวลผลหลัก ---
 if selected_countries:
-    data = fetch_wgi_safe(selected_countries, selected_ind_code, start_year)
+    data = fetch_wgi_robust(selected_countries, selected_ind_code, start_year)
     
     if data is not None and not data.empty:
-        # หาปีล่าสุดที่ธนาคารโลกมีข้อมูลจริง
-        latest_yr = data['Year'].max()
-        st.success(f"📊 เชื่อมต่อสำเร็จ: ข้อมูลจริงล่าสุดจาก World Bank คือปี {latest_yr}")
+        # หาปีล่าสุดที่มีข้อมูลจริง
+        latest_actual_year = data['Year'].max()
+        st.success(f"📊 เชื่อมต่อสำเร็จ: ข้อมูลจริงล่าสุดคือปี {latest_actual_year}")
 
-        # --- การพยากรณ์ล่วงหน้า 3 ปี ---
-        forecast_list = []
-        for c in selected_countries:
-            c_data = data[data['Country'] == c]
-            if len(c_data) >= 3:
-                model = LinearRegression().fit(c_data[['Year']], c_data['Score'])
+        # --- การพยากรณ์ล่วงหน้า 3 ปี (Statistical Forecasting) ---
+        forecast_results = []
+        for country in selected_countries:
+            c_df = data[data['Country'] == country]
+            if len(c_df) >= 3:
+                # ใช้ Linear Regression คำนวณแนวโน้ม
+                X = c_df[['Year']].values
+                y = c_df['Score'].values
+                model = LinearRegression().fit(X, y)
                 
-                # พยากรณ์ต่อจากปีล่าสุดที่มีข้อมูลจริง
-                f_years = np.array([latest_yr + 1, latest_yr + 2, latest_yr + 3]).reshape(-1, 1)
-                preds = model.predict(f_years)
+                # พยากรณ์ต่อจากปีล่าสุดที่มีข้อมูลไปอีก 3 ปี
+                future_yrs = np.array([latest_actual_year+1, latest_actual_year+2, latest_actual_year+3]).reshape(-1, 1)
+                preds = model.predict(future_yrs)
                 
-                for i, yr in enumerate(f_years.flatten()):
-                    forecast_list.append({'Country': c, 'Year': int(yr), 'Score': round(preds[i], 3), 'Type': 'Forecast'})
+                for i, yr in enumerate(future_yrs.flatten()):
+                    forecast_results.append({'Country': country, 'Year': int(yr), 'Score': round(preds[i], 3), 'Type': 'Forecast'})
 
         data['Type'] = 'Actual'
-        df_final = pd.concat([data, pd.DataFrame(forecast_list)]).reset_index(drop=True)
+        df_forecast = pd.DataFrame(forecast_results)
+        df_final = pd.concat([data, df_forecast]).reset_index(drop=True)
 
-        # --- การแสดงผล ---
-        # 1. Metrics
-        cols = st.columns(len(selected_countries))
-        for idx, c in enumerate(selected_countries):
-            latest_score = data[data['Country'] == c]['Score'].iloc[-1]
-            with cols[idx]:
-                st.metric(f"{c} ({latest_yr})", f"{latest_score:.2f}")
+        # --- การแสดงผล (UI) ---
+        # 1. แสดงตัวเลขสรุป
+        m_cols = st.columns(len(selected_countries))
+        for idx, country in enumerate(selected_countries):
+            last_score = data[data['Country'] == country].iloc[-1]['Score']
+            with m_cols[idx]:
+                st.metric(f"{country} ({latest_actual_year})", f"{last_score:.2f}")
 
-        # 2. Graph
+        # 2. กราฟเส้นแนวโน้ม
         fig = px.line(df_final, x="Year", y="Score", color="Country", line_dash="Type",
-                      markers=True, template="plotly_white", height=500)
+                      markers=True, template="plotly_white", height=550,
+                      title=f"แนวโน้มและคาดการณ์: {selected_ind_label}")
+        
+        # ปรับแต่งกราฟ
         fig.update_layout(yaxis_range=[-2.5, 2.5], hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        # 3. Table
-        with st.expander("🔎 ตรวจสอบข้อมูลดิบและการพยากรณ์"):
-            st.dataframe(df_final.pivot(index='Year', columns='Country', values='Score').sort_index(ascending=False))
+        # 3. ตารางข้อมูล
+        with st.expander("🔎 ตรวจสอบตารางข้อมูลและค่าพยากรณ์"):
+            pivot_df = df_final.pivot(index='Year', columns='Country', values='Score').sort_index(ascending=False)
+            st.dataframe(pivot_df, use_container_width=True)
+            
+        # ปุ่มดาวน์โหลด
+        csv = df_final.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 ดาวน์โหลดข้อมูล (CSV)", csv, "wgi_analysis_export.csv", "text/csv")
 
     else:
-        st.error("⚠️ ไม่สามารถดึงข้อมูลได้ในช่วงปีที่เลือก โปรดลองปรับ 'ปีเริ่มต้นฐานข้อมูล' ให้ย้อนหลังมากขึ้น")
+        st.error("❌ ไม่สามารถดึงข้อมูลได้ โปรดลองปรับ 'ปีเริ่มต้น' หรือเปลี่ยนประเทศ")
 else:
-    st.info("👈 กรุณาเลือกประเทศที่ Sidebar")
+    st.info("👈 กรุณาเลือกประเทศที่เมนูด้านซ้ายเพื่อเริ่มการวิเคราะห์")
